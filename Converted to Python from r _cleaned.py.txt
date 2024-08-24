@@ -1,0 +1,250 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize
+import quadprog
+import os
+import seaborn as sns
+from scipy.optimize import differential_evolution
+
+
+# Clear the workspace
+# In Python, we don't need to clear the workspace explicitly
+
+# Set the library paths (not applicable in Python)
+
+np.random.seed(123)
+
+# Set working directory
+print(os.getcwd())  # Where does the code think it is?
+os.chdir('C:/Users/keneilwe.manda/Downloads')  # Where do I want my code to be?
+
+# Read the data
+StockData = pd.read_csv('C:/Users/keneilwe.manda/Downloads/MSc_Research_Testing/data.txt.txt', header=0)
+StockData = StockData.iloc[:, :80]  # Keep only the first 80 columns
+
+ncol = StockData.shape[1]  # Number of stocks
+popSize = 300
+generations = 500
+interest_rate = 0.007
+
+thresh = 0.02  # Threshold below which weight is set to 0
+
+def evalFunc1(y):
+    x9 = np.arange(1, ncol + 1)  # Generate a sequence of 1-80 representing stock position in StockData
+    y[y < (1 + thresh)] = 0  # Set weights to 0 for stocks not picked
+
+    xx = np.floor(y)  # Stock picking indicator
+
+    x = xx * x9  # Position of stock if picked
+
+    xy = y - 1  # Calculate weight from y values
+    w = xy[xy > 0]  # Calculate weight vector
+
+    weights = w / np.sum(w)  # Rebalance weights to sum to 1
+
+    x = x[x > 0]  # Get rid of stocks that were not picked
+
+    if len(x) < 2:  # Check if there are at least 2 stocks in the portfolio
+        var = np.inf
+        mean = np.inf
+    else:  # Continue with the calculation
+        Mat1 = StockData.iloc[:, x.astype(int) - 1]  # Mat1 is the matrix of stocks that were picked
+        Mat = Mat1.to_numpy()  # Turn Mat1 to matrix
+
+        if Mat.shape[1] != len(weights):
+            raise ValueError("Number of columns in Mat must equal the number of weights")
+
+        mean = np.sum(np.mean(Mat, axis=0) * weights) * -1  # Calculate expected return
+        var = np.sqrt(np.dot(weights.T, np.dot(np.cov(Mat.T), weights)))  # Calculate variance
+
+    return np.array([var, mean])
+
+# Set seed for reproducibility
+# In Python, we don't have a direct equivalent for setting a seed for optimization algorithms
+
+# Use differential evolution as a placeholder for nsga2R
+bounds = [(1, 1.9)] * ncol
+resultsMV = differential_evolution(evalFunc1, bounds, maxiter=generations, popsize=popSize)
+
+Big = resultsMV.x  # Get result of weights
+Big1 = resultsMV.x.copy()  # Placeholder1
+Big2 = resultsMV.x.copy()  # Placeholder2
+Big1[Big < (1 + thresh)] = 0  # Get rid of weights that are below the threshold
+Bigfloor = np.floor(Big1)  # Floor removes the decimal
+
+
+# Assuming Bigfloor and Big2 are defined as numpy arrays or pandas DataFrames
+PortfolioSizeVAR = np.sum(Bigfloor, axis=1)  # rowsum indicator of stock picked to get number of stocks per portfolio on the efficient frontier
+PortfolioweightVAR = Big2 - 1  # Get the weight of stocks in each portfolio on the frontier
+
+rebal = np.sum(PortfolioweightVAR, axis=1)  # Calculate rowsum of weight to be used to rebalance the weights
+SumRebalWeightsMV = np.sum(PortfolioweightVAR, axis=1) / rebal  # Rebalanced weights should be all 1
+rebalancedNSG2Weights = PortfolioweightVAR / rebal
+
+VAR_NSGA2 = np.abs(resultsMV['objectives'][:, 0])
+returns_NSGA2 = np.abs(resultsMV['objectives'][:, 1])
+interest_rate = 0  # Define interest_rate as needed
+sharp_NSGA2 = (returns_NSGA2 - interest_rate) / VAR_NSGA2  # ^0.5
+
+max_sharpNAG2 = np.argmax(sharp_NSGA2)
+MVP_NAGA2 = np.argmin(VAR_NSGA2)
+
+plt.scatter(VAR_NSGA2, returns_NSGA2)
+positionNSGA2 = [""] * popSize
+positionNSGA2[max_sharpNAG2] = "OPTIMAL"
+positionNSGA2[MVP_NAGA2] = "MVP"
+
+MVP_NSGA2_W = rebalancedNSG2Weights[MVP_NAGA2, :]
+max_sharpNAG2_W = rebalancedNSG2Weights[max_sharpNAG2, :]
+
+dat = pd.DataFrame({'x': VAR_NSGA2, 'y': returns_NSGA2, 'ID': positionNSGA2})
+plt.scatter(dat['x'], dat['y'])
+for i in range(len(dat)):
+    plt.text(dat['x'][i], dat['y'][i], dat['ID'][i], fontdict={'color': 'red'})
+plt.title("NSGA2 MV Frontier")
+plt.xlabel("SD")
+plt.ylabel("Returns")
+plt.show()
+
+# QP
+r = pd.DataFrame(StockData.iloc[:80])
+return_Data = r.to_numpy()
+
+er = return_Data
+cov_mat = np.cov(er, rowvar=False)
+
+def efficientFrontier(mean, vcov, aver):
+    aversion = aver  # Risk aversion parameter
+    n_asset = mean.shape[1]
+    Dmat = vcov
+    dvec = np.mean(mean, axis=0) * aversion  # penalized returns
+    meq = 1
+
+    bvec = np.concatenate(([1], np.zeros(n_asset)))
+    Amat = np.column_stack((np.ones(n_asset), np.eye(n_asset)))
+
+    sol = quadprog.solve_qp(Dmat, dvec, Amat.T, bvec, meq=meq)
+    w = sol[0]
+    return w
+
+
+# Initialize matrices and vectors
+wmatrix = np.zeros((300, 80))
+mean_vector = np.zeros(300)
+var_vector = np.zeros(300)
+sharp_vector = np.zeros(300)
+comp_vector = np.zeros(300)
+num_stocks = np.zeros(300)
+
+loop = 0
+for risk in np.arange(0.00, 3.00, 0.01):
+    w = efficientFrontier(mean=er, vcov=cov.mat, aver=risk)
+    wmatrix[loop, :] = np.round(w, 4)
+    mean_vector[loop] = np.sum(np.round(w, 4) * np.mean(er, axis=0))
+    var_vector[loop] = np.sqrt(np.dot(np.round(w, 4).T, np.dot(cov.mat, np.round(w, 4))))
+    sharp_vector[loop] = (mean_vector[loop] - interest_rate) / var_vector[loop]  # Sharpe Ratio
+    num_stocks[loop] = np.count_nonzero(wmatrix[loop, :])  # number of stocks
+
+    loop += 1
+    print(risk)
+
+num_stocks
+
+max_sharpMV = np.argmax(sharp_vector)
+MVP_MV = np.argmin(var_vector)
+max_sharpMV, MVP_MV
+
+
+# Assuming var_vector, mean_vector, MVP_MV, max_sharpMV, wmatrix, VAR_NSGA2, returns_NSGA2, positionNSGA2 are defined
+
+plt.plot(var_vector, mean_vector)
+
+positionMV = [""] * 300
+positionMV[max_sharpMV] = "OPTIMAL"
+positionMV[MVP_MV] = "MVP"
+
+MVP_MV_W = wmatrix[MVP_MV, :]
+max_sharpMV_W = wmatrix[max_sharpMV, :]
+
+dat = pd.DataFrame({'x': var_vector, 'y': mean_vector, 'ID': positionMV})
+pp = sns.scatterplot(data=dat, x='x', y='y')
+for i in range(len(dat)):
+    pp.text(dat['x'][i], dat['y'][i], dat['ID'][i], fontweight='bold', color='red')
+
+plt.title("QP MV Frontier")
+plt.xlabel("SD")
+plt.ylabel("Returns")
+plt.show()
+
+dat1 = pd.DataFrame({'x': VAR_NSGA2, 'y': returns_NSGA2, 'ID': positionNSGA2})
+
+pf = sns.scatterplot(data=dat, x='x', y='y', color='red')
+for i in range(len(dat)):
+    pf.text(dat['x'][i], dat['y'][i], dat['ID'][i], color='red')
+
+sns.scatterplot(data=dat1, x='x', y='y', color='blue', s=20)
+for i in range(len(dat1)):
+    pf.text(dat1['x'][i], dat1['y'][i], dat1['ID'][i], color='blue')
+
+plt.xlabel("Standard Deviation")
+plt.ylabel("Expected Returns")
+plt.show()
+
+stocks = np.arange(80)
+MVP_weights = np.vstack((MVP_MV_W, MVP_NSGA2_W))
+plt.bar(stocks, MVP_weights[0], color='red', label='MVP QP')
+plt.bar(stocks, MVP_weights[1], color='blue', label='MVP NSGAII', bottom=MVP_weights[0])
+plt.title("Weight of MVP QP (red) and NSGAII (blue)")
+plt.xlabel("stocks")
+plt.ylabel("weights")
+plt.legend()
+plt.show()
+
+OP_weights = np.vstack((max_sharpMV_W, max_sharpNAG2_W))
+plt.bar(stocks, OP_weights[0], color='red', label='OP QP')
+plt.bar(stocks, OP_weights[1], color='blue', label='OP NSGAII', bottom=OP_weights[0])
+plt.title("Weight of OP QP (red) and NSGAII (blue)")
+plt.xlabel("stocks")
+plt.ylabel("weights")
+plt.legend()
+plt.show()
+
+
+# Assuming return_Data, MVP_MV_W, MVP_NSGA2_W, max_sharpMV_W, max_sharpNAG2_W are defined
+
+# OP Returns
+returns_NSGA2 = returns_NSGA2[max_sharpNAG2]  # NSGAII optimal expected returns
+mean_vector = mean_vector[max_sharpMV]          # QP optimal expected returns
+
+VAR_NSGA2 = VAR_NSGA2[max_sharpNAG2]            # NSGAII optimal Standard deviation
+var_vector = var_vector[max_sharpMV]              # QP optimal Standard deviation
+
+sharp_vector = sharp_vector[max_sharpMV]          # QP Sharpe ratio
+sharp_NSGA2 = sharp_NSGA2[max_sharpNAG2]         # NSGAII Sharpe ratio
+
+# Minimum risk
+returns_NSGA2 = returns_NSGA2[MVP_NAGA2]        # NSGAII MVP expected returns
+mean_vector = mean_vector[MVP_MV]                  # QP MVP expected returns
+
+VAR_NSGA2 = VAR_NSGA2[MVP_NAGA2]                  # NSGAII MVP Standard deviation
+var_vector = var_vector[MVP_MV]                    # QP MVP Standard deviation
+
+sharp_vector = sharp_vector[MVP_MV]                # QP MVP Sharpe ratio
+sharp_NSGA2 = sharp_NSGA2[MVP_NAGA2]              # NSGAII MVP Sharpe ratio
+
+######################################
+# Portfolio returns
+
+MVP_QP_returns = np.dot(return_Data, MVP_MV_W)              # Minimum variance portfolio QP returns
+MVP_NSGA2_returns = np.dot(return_Data, MVP_NSGA2_W)        # Minimum variance portfolio NSGA2 returns
+OP_QP_returns = np.dot(return_Data, max_sharpMV_W)         # Optimal portfolio QP returns
+OP_NSGA2_returns = np.dot(return_Data, max_sharpNAG2_W)    # Optimal portfolio NSGA2 return
+
+Port_Returns = np.column_stack((MVP_QP_returns, MVP_NSGA2_returns, OP_QP_returns, OP_NSGA2_returns))
+Port_Returns_df = pd.DataFrame(Port_Returns, columns=["MVP_QP_returns", "MVP_NSGA2_returns", "OP_QP_returns", "OP_NSGA2_returns"])
+
+Port_Returns_df.to_excel("Master Research read/Complexity_progs/data.txt read/Complexity_Second/Code1/Returns.xlsx", 
+                          sheet_name="MV_Returns", index=True)
+
+
